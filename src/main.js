@@ -29,8 +29,6 @@ function createApp() {
   return app;
 }
 
-const PORT = process.env.PORT || 3000;
-const app = createApp();
 
 const PORT = process.env.PORT || 3000;
 const app = createApp();
