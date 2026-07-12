@@ -32,6 +32,9 @@ function createApp() {
 const PORT = process.env.PORT || 3000;
 const app = createApp();
 
-app.listen(PORT, () => {
-  console.log(`🐾 Tamagotchi backend running on http://localhost:${PORT}`);
+const PORT = process.env.PORT || 3000;
+const app = createApp();
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🐾 Tamagotchi backend running on port ${PORT}`);
 });
