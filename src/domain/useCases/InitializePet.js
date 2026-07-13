@@ -12,6 +12,7 @@ import { getPhysicalPreset } from "../presets/physicalPresets.js";
 import { getMemoryPreset } from "../presets/memoryPresets.js";
 import { createDefaultBodyParts } from "../models/BodyPart.js";
 import { createCoreEmotion, CORE_EMOTIONS } from "../models/memory/CoreEmotion.js";
+import { createPersonMemory } from "../models/memory/PersonMemory.js";
 
 function isNeuroInitialized(pet) {
   return pet?._neuroSeeded === true;
@@ -37,6 +38,7 @@ export function initializePet({
     coreEmotions: [],
     preferences: [],
     experiences: [],
+    personMemories: [],
   };
 
   // --- Neuro (personality): embedded, seed only if missing ---
@@ -53,6 +55,19 @@ export function initializePet({
     subcollections.coreEmotions = CORE_EMOTIONS.map(emotion =>
       createCoreEmotion(emotion, `Initial ${emotion} state`, { intensity: 0.5 })
     );
+
+    // Seed the foundational relationship: the user IS the Master. Every
+    // personality carries this memory from birth.
+    subcollections.personMemories = [
+      createPersonMemory("user", "Amo", "master", {
+        firstMeetAt: new Date().toISOString(),
+        trustLevel: 0.7,
+        affectionLevel: 0.6,
+      }, {
+        intensity: 1,
+        tags: ["person:user", "relationship:master", "el usuario es el amo"],
+      }),
+    ];
 
     // Seed personality-specific preferences and experiences
     const memoryPreset = getMemoryPreset(neuroPresetId);

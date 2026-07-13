@@ -1,29 +1,45 @@
 // application/orchestrators/InteractionOrchestrator.js
-// Runs the "user talks to the pet" pipeline end to end:
+// The AI-driven flows where the user addresses the pet directly:
 //
-//   1. GATHER   load pet + equipped clothing + memories + sensitive zones,
-//               compute coverage (naked or clothed) and numeric afflictions.
-//   2. ASSESS   AI call #1: which afflictions it perceives, small stat DELTAS,
-//               and which memory (if any) it wants to use.
-//   3. VALIDATE pure domain check: claims without numeric support are rejected,
-//               deltas are whitelisted + clamped. Nothing the AI says is
-//               trusted directly.
-//   4. APPLY    validated deltas hit the DB atomically (transaction), then the
-//               pet is re-read so the reply sees the REAL updated state.
-//   5. REPLY    AI call #2 from the fresh state. Its hidden saveMemory
-//               directive is consumed HERE (persisted, stripped from the
-//               user-visible payload).
+//   interact()       "user talks to the pet" — the 5-step pipeline:
+//     1. GATHER   pet + clothing + memories + zones + organs; coverage
+//                 (clothed/naked per part AND per intimate zone) + numeric
+//                 afflictions.
+//     2. ASSESS   AI call #1: perceived afflictions, small stat DELTAS, and
+//                 which memory (if any) it wants to lean on.
+//     3. VALIDATE pure domain: claims without numeric support are rejected,
+//                 deltas whitelisted + clamped. Nothing the AI says is
+//                 trusted directly.
+//     4. APPLY    validated deltas hit the DB atomically; afflictions are
+//                 recomputed from the POST-update state so the reply (and the
+//                 client) see current truth.
+//     5. REPLY    AI call #2 from the fresh state, split in two channels:
+//                 message (dialogue) + action (explicit narration of what the
+//                 user sees). Its hidden saveMemory directive is consumed
+//                 HERE (persisted, stripped from the visible payload).
 //
-// Knows NOTHING about Firestore or Gemini — only injected port-shaped services
-// plus pure domain use cases. Dependencies arrive via constructor injection.
+//   requestUndress() "user asks her to take clothes off" — the AI decides in
+//     character, grounded by a numeric disposition score; an acceptance the
+//     numbers can't justify is overridden. If she agrees, the garments come
+//     off atomically together with the stat deltas, then the normal reply
+//     call narrates the result.
+//
+// Knows NOTHING about Firestore or Gemini — only injected port-shaped
+// services plus pure domain use cases.
 
 import { computeBodyCoverage } from "../../domain/useCases/ComputeBodyCoverage.js";
+import { computeZoneExposure } from "../../domain/useCases/ComputeZoneExposure.js";
 import { computeAfflictions } from "../../domain/useCases/AssessPetState.js";
 import {
   validateAiAssessment,
   applyApprovedDeltas,
 } from "../../domain/useCases/ValidateAiAssessment.js";
-import { buildMemoryIndex } from "../../domain/useCases/BuildMemoryIndex.js";
+import {
+  computeUndressDisposition,
+  validateUndressDecision,
+} from "../../domain/useCases/EvaluateUndressRequest.js";
+import { buildMemoryIndex, findMemoryById } from "../../domain/useCases/BuildMemoryIndex.js";
+import { EROGENOUS_ZONE_IDS } from "../../domain/models/erogenousZoneCatalog.js";
 import { createThought } from "../../domain/models/Thought.js";
 import { createEventLogEntry } from "../../domain/models/memory/EventLog.js";
 import { createEphemeralMemory } from "../../domain/models/memory/EphemeralMemory.js";
@@ -36,73 +52,201 @@ export class InteractionOrchestrator {
     this.ia = iaService;
   }
 
+  // ------------------------------------------------------------------ talk
   async interact(petId, userMessage, context = {}) {
+    this._requireMessage(userMessage);
+    const pet = await this._requirePet(petId);
+    const ctx = await this._gather(pet);
+
+    // --- 2. AI assessment (a PROPOSAL, not truth) ---
+    const assessment = await this.ia.assessInteraction(
+      pet,
+      { coverage: ctx.coverage.coverage, afflictions: ctx.afflictions, memoryIndex: ctx.memoryIndex },
+      userMessage,
+      context
+    );
+
+    // --- 3. Numeric validation: reject what the numbers don't support ---
+    const validation = validateAiAssessment(pet, ctx.afflictions, assessment);
+    const usedMemory = findMemoryById(ctx.memories, validation.usedMemoryId);
+
+    // --- 4. Apply validated deltas atomically (returns the clean fresh doc) ---
+    let updatedPet = pet;
+    if (Object.keys(validation.approvedDeltas).length > 0) {
+      updatedPet = await this.repo.runPetTransaction(petId, (current) =>
+        applyApprovedDeltas(current, validation.approvedDeltas)
+      );
+    }
+
+    // Afflictions recomputed from the POST-update state: this is what the
+    // reply prompt sees and what the client receives.
+    const postAfflictions = computeAfflictions(updatedPet, { nakedParts: ctx.coverage.nakedParts });
+    const approvedAfflictions = validateAiAssessment(updatedPet, postAfflictions, assessment).approvedAfflictions;
+
+    // --- 5. Reply from the UPDATED state; consume hidden directives ---
+    const { reply, savedMemory } = await this._replyAndPersist(petId, updatedPet, {
+      coverage: ctx.coverage.coverage,
+      afflictions: approvedAfflictions,
+      usedMemory,
+      zoneExposure: ctx.zoneExposure,
+      organs: ctx.organs,
+    }, userMessage, context, {
+      eventType: "speak",
+      action: "said",
+      metadata: { memoryUsedId: usedMemory?.id ?? null },
+    });
+
+    return {
+      message: reply.message,
+      action: reply.action,
+      emotion: reply.emotion,
+      intensity: reply.intensity,
+      gazeTarget: reply.gazeTarget,
+      afflictions: approvedAfflictions,
+      rejectedAfflictions: validation.rejectedAfflictions,
+      memoryUsedId: usedMemory?.id ?? null,
+      memorySaved: Boolean(savedMemory),
+      state: this._publicState(updatedPet, ctx.coverage),
+    };
+  }
+
+  // -------------------------------------------------- "take that off" flow
+  async requestUndress(petId, userMessage, requestedItemIds = null, context = {}) {
+    this._requireMessage(userMessage);
+    const pet = await this._requirePet(petId);
+    const ctx = await this._gather(pet);
+    const equippedIds = ctx.equippedItems.map((i) => i.id);
+
+    // Nothing to remove: skip the decision, let her react to the situation.
+    if (equippedIds.length === 0) {
+      const { reply, savedMemory } = await this._replyAndPersist(petId, pet, {
+        coverage: ctx.coverage.coverage,
+        afflictions: ctx.afflictions,
+        usedMemory: null,
+        zoneExposure: ctx.zoneExposure,
+        organs: ctx.organs,
+        recentEvent: "El usuario pide que te quites ropa, pero ya no llevas ninguna prenda puesta.",
+      }, userMessage, context, {
+        eventType: "action",
+        action: "undress_requested",
+        metadata: { accepted: false, reason: "no clothes equipped" },
+      });
+      return this._undressPayload(false, [], "no lleva ropa puesta", false, reply, savedMemory, pet, ctx.coverage);
+    }
+
+    // --- AI decision, grounded by the numeric disposition ---
+    const disposition = computeUndressDisposition(pet);
+    const decision = await this.ia.decideUndress(
+      pet,
+      { equippedItems: ctx.equippedItems, requestedItemIds, disposition, memoryIndex: ctx.memoryIndex },
+      userMessage,
+      context
+    );
+    const verdict = validateUndressDecision(pet, disposition, decision, equippedIds, requestedItemIds);
+
+    // --- Apply: garments off + stat deltas in ONE atomic transaction ---
+    const remaining = verdict.accepts
+      ? equippedIds.filter((id) => !verdict.itemIds.includes(id))
+      : equippedIds;
+
+    let updatedPet = pet;
+    const hasChanges = verdict.accepts || Object.keys(verdict.approvedDeltas).length > 0;
+    if (hasChanges) {
+      updatedPet = await this.repo.runPetTransaction(petId, (current) => ({
+        ...applyApprovedDeltas(current, verdict.approvedDeltas),
+        ...(verdict.accepts
+          ? { equippedItemIds: remaining, updatedAt: new Date().toISOString() }
+          : {}),
+      }));
+    }
+
+    // Recompute the wardrobe view from what she is wearing NOW.
+    const remainingItems = ctx.equippedItems.filter((i) => remaining.includes(i.id));
+    const coverage = computeBodyCoverage(updatedPet.bodyParts, remainingItems);
+    const zoneExposure = computeZoneExposure(ctx.zones, remainingItems);
+    const postAfflictions = computeAfflictions(updatedPet, { nakedParts: coverage.nakedParts });
+
+    const removedNames = ctx.equippedItems
+      .filter((i) => verdict.itemIds.includes(i.id))
+      .map((i) => i.name);
+    const recentEvent = verdict.accepts
+      ? `Acabas de aceptar la petición del usuario y te has quitado: ${removedNames.join(", ")}.`
+      : `Te has negado a quitarte la ropa que el usuario pedía${verdict.overridden ? " (tu estado interno no lo permite)" : ""}. Motivo interno: ${verdict.reason || "no querías"}.`;
+
+    const { reply, savedMemory } = await this._replyAndPersist(petId, updatedPet, {
+      coverage: coverage.coverage,
+      afflictions: postAfflictions,
+      usedMemory: null,
+      zoneExposure,
+      organs: ctx.organs,
+      recentEvent,
+    }, userMessage, context, {
+      eventType: "action",
+      action: "undress_requested",
+      metadata: {
+        accepted: verdict.accepts,
+        removedItemIds: verdict.itemIds,
+        overridden: verdict.overridden,
+        disposition: disposition.score,
+      },
+    });
+
+    return this._undressPayload(
+      verdict.accepts, verdict.itemIds, verdict.reason, verdict.overridden,
+      reply, savedMemory, updatedPet, coverage
+    );
+  }
+
+  // ------------------------------------------------------------- internals
+
+  _requireMessage(userMessage) {
     if (!userMessage || typeof userMessage !== "string") {
       const err = new Error("message is required");
       err.status = 400;
       throw err;
     }
+  }
 
-    // --- 1. Gather context ---
+  async _requirePet(petId) {
     const pet = await this.repo.getPet(petId);
     if (!pet) {
       const err = new Error(`Pet ${petId} not found`);
       err.status = 404;
       throw err;
     }
+    return pet;
+  }
 
-    const [equippedItems, memories, zones] = await Promise.all([
+  // Load everything the prompts need, in parallel.
+  async _gather(pet) {
+    const [equippedItems, memories, zones, organs] = await Promise.all([
       this._getEquippedItems(pet),
-      this.repo.getAllMemories(petId),
-      this.repo.listErogenousZones(petId),
+      this.repo.getAllMemories(pet.id),
+      this.repo.listErogenousZones(pet.id),
+      this.repo.listSpecialOrgans(pet.id),
     ]);
 
     const coverage = computeBodyCoverage(pet.bodyParts, equippedItems);
-    const afflictions = computeAfflictions(pet, { nakedParts: coverage.nakedParts });
-    const memoryIndex = buildMemoryIndex(memories);
-    // Only zones with any development or visible phenomena go to the prompt
-    // (all ~24 catalog zones every time would waste tokens for nothing).
-    const activeZones = zones.filter(
-      (z) => z.isErogenous || z.developedSensitivity > 0 || (z.physicalDetails?.length ?? 0) > 0
-    );
 
-    // --- 2. AI assessment (a PROPOSAL, not truth) ---
-    const assessment = await this.ia.assessInteraction(
-      pet,
-      { coverage: coverage.coverage, afflictions, memoryIndex },
-      userMessage,
-      context
-    );
+    return {
+      equippedItems,
+      memories,
+      zones,
+      organs,
+      coverage,
+      zoneExposure: computeZoneExposure(zones, equippedItems),
+      afflictions: computeAfflictions(pet, { nakedParts: coverage.nakedParts }),
+      memoryIndex: buildMemoryIndex(memories),
+    };
+  }
 
-    // --- 3. Numeric validation: reject what the numbers don't support ---
-    const validation = validateAiAssessment(pet, afflictions, assessment);
-    const usedMemory = validation.usedMemoryId
-      ? memoryIndex.find((m) => m.id === validation.usedMemoryId) ?? null
-      : null;
+  // Reply call + hidden-directive consumption + persistence (lastThought,
+  // event log). Shared by interact() and requestUndress().
+  async _replyAndPersist(petId, pet, snapshot, userMessage, context, eventInfo) {
+    const reply = await this.ia.respondInteraction(pet, snapshot, userMessage, context);
 
-    // --- 4. Apply validated deltas atomically, then re-read the clean doc ---
-    // (runPetTransaction's return mixes dot-notation keys into the object, so
-    // the reply prompt needs a fresh read to see properly nested state.)
-    let updatedPet = pet;
-    if (Object.keys(validation.approvedDeltas).length > 0) {
-      await this.repo.runPetTransaction(petId, (current) =>
-        applyApprovedDeltas(current, validation.approvedDeltas)
-      );
-      updatedPet = await this.repo.getPet(petId);
-    }
-
-    // --- 5. Reply from the UPDATED state; consume hidden directives ---
-    const reply = await this.ia.respondInteraction(
-      updatedPet,
-      {
-        coverage: coverage.coverage,
-        afflictions: validation.approvedAfflictions,
-        usedMemory,
-        activeZones,
-      },
-      userMessage,
-      context
-    );
+    // gazeTarget must be a real body part, zone or organ id — otherwise null.
+    reply.gazeTarget = this._validGazeTarget(reply.gazeTarget, pet, snapshot.organs ?? []);
 
     const savedMemory = reply.saveMemory
       ? await this._saveMemory(petId, reply.saveMemory)
@@ -111,6 +255,7 @@ export class InteractionOrchestrator {
     const thought = createThought({
       emotion: reply.emotion,
       message: reply.message,
+      action: reply.action,
       intensity: reply.intensity,
     });
 
@@ -121,30 +266,51 @@ export class InteractionOrchestrator {
       }),
       this.repo.addEventLogEntry(
         petId,
-        createEventLogEntry("speak", "user", "said", reply.gazeTarget, {
+        createEventLogEntry(eventInfo.eventType, "user", eventInfo.action, reply.gazeTarget, {
           userMessage,
           emotion: reply.emotion,
-          memoryUsedId: usedMemory?.id ?? null,
           memorySaved: Boolean(savedMemory),
+          ...eventInfo.metadata,
         })
       ),
     ]);
 
-    // Visible payload ONLY — the hidden saveMemory content stays server-side.
+    return { reply, savedMemory };
+  }
+
+  _validGazeTarget(gazeTarget, pet, organs) {
+    if (!gazeTarget || typeof gazeTarget !== "string") return null;
+    const valid =
+      (pet.bodyParts && gazeTarget in pet.bodyParts) ||
+      EROGENOUS_ZONE_IDS.includes(gazeTarget) ||
+      organs.some((o) => (o.organId ?? o.id) === gazeTarget);
+    return valid ? gazeTarget : null;
+  }
+
+  _publicState(pet, coverage) {
     return {
-      thought,
+      neuroState: pet.neuroState,
+      physicalState: pet.physicalState,
+      arousalState: pet.arousalState ?? null,
+      equippedItemIds: pet.equippedItemIds ?? [],
+      nakedParts: coverage.nakedParts,
+      isFullyNaked: coverage.isFullyNaked,
+    };
+  }
+
+  _undressPayload(accepted, removedItemIds, reason, overridden, reply, savedMemory, pet, coverage) {
+    return {
+      accepted,
+      removedItemIds,
+      reason,
+      overridden,
+      message: reply.message,
+      action: reply.action,
+      emotion: reply.emotion,
+      intensity: reply.intensity,
       gazeTarget: reply.gazeTarget,
-      afflictions: validation.approvedAfflictions,
-      rejectedAfflictions: validation.rejectedAfflictions,
-      memoryUsedId: usedMemory?.id ?? null,
       memorySaved: Boolean(savedMemory),
-      state: {
-        neuroState: updatedPet.neuroState,
-        physicalState: updatedPet.physicalState,
-        arousalState: updatedPet.arousalState ?? null,
-        nakedParts: coverage.nakedParts,
-        isFullyNaked: coverage.isFullyNaked,
-      },
+      state: this._publicState(pet, coverage),
     };
   }
 

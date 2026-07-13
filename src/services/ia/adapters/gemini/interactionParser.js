@@ -4,7 +4,11 @@
 // problems degrade to safe defaults instead of throwing, so one malformed
 // model reply never breaks the pipeline.
 
-import { createAiAssessment, createInteractionReply } from "../../../../domain/models/Interaction.js";
+import {
+  createAiAssessment,
+  createInteractionReply,
+  createUndressDecision,
+} from "../../../../domain/models/Interaction.js";
 import { safeJsonParse, clamp01 } from "./_jsonUtils.js";
 
 // Call #1 result. Unknown affliction ids / illegal paths are NOT filtered here
@@ -64,10 +68,36 @@ export function parseInteractionReply(rawText) {
   return createInteractionReply({
     emotion: typeof data.emotion === "string" ? data.emotion : "neutral",
     message: typeof data.message === "string" ? data.message : "",
+    action: typeof data.action === "string" ? data.action : "",
     intensity: clamp01(data.intensity),
     gazeTarget: typeof data.gazeTarget === "string" && data.gazeTarget !== "null"
       ? data.gazeTarget
       : null,
     saveMemory: parseSaveMemory(data.hidden),
+  });
+}
+
+// Undress-decision result. Garbage degrades to a refusal (the safe default).
+export function parseUndressDecision(rawText) {
+  let data;
+  try {
+    data = safeJsonParse(rawText);
+  } catch {
+    return createUndressDecision(); // accepts: false
+  }
+
+  const statChanges = {};
+  if (data.statChanges && typeof data.statChanges === "object") {
+    for (const [path, delta] of Object.entries(data.statChanges)) {
+      const n = Number(delta);
+      if (!Number.isNaN(n)) statChanges[path] = n;
+    }
+  }
+
+  return createUndressDecision({
+    accepts: data.accepts === true,
+    itemIds: Array.isArray(data.itemIds) ? data.itemIds.map(String) : [],
+    reason: typeof data.reason === "string" ? data.reason : "",
+    statChanges,
   });
 }

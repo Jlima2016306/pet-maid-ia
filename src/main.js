@@ -7,6 +7,7 @@ import "dotenv/config";
 
 import { buildContainer } from "./infrastructure/injector.js";
 import { createPetRoutes } from "./infrastructure/routes/petRoutes.js";
+import { createClothingRoutes } from "./infrastructure/routes/clothingRoutes.js";
 import { notFound, errorHandler } from "./infrastructure/middleware/errorHandler.js";
 
 function createApp() {
@@ -19,8 +20,9 @@ function createApp() {
   // Health check.
   app.get("/health", (req, res) => res.json({ status: "ok" }));
 
-  // Mount pet routes, passing the orchestrator from the container.
+  // Mount routes, passing the orchestrators from the container.
   app.use("/pets", createPetRoutes(container));
+  app.use("/clothing", createClothingRoutes(container));
 
   // 404 + error handling last.
   app.use(notFound);

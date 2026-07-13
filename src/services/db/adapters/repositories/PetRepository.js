@@ -38,7 +38,16 @@ export class PetRepository {
   // Partial update with dot-notation keys, e.g. { "neuroState.cortisol": 0.82 }
   async updateFields(petId, fields) {
     const ref = this.pets.doc(petId);
-    await ref.update(fields);
+    try {
+      await ref.update(fields);
+    } catch (err) {
+      if (err.code === 5) { // Firestore NOT_FOUND -> proper 404 instead of a raw 500
+        const e = new Error(`Pet ${petId} not found`);
+        e.status = 404;
+        throw e;
+      }
+      throw err;
+    }
     return withId(await ref.get());
   }
 
@@ -48,19 +57,25 @@ export class PetRepository {
   }
 
   // Atomic "tick": read current pet, let mutatorFn compute the field updates,
-  // apply them in one transaction. All-or-nothing.
+  // apply them in one transaction. All-or-nothing. Returns the pet re-read
+  // AFTER commit: the updates use dot-notation keys, so merging them into the
+  // in-memory object would corrupt its nested shape.
   async runTransaction(petId, mutatorFn) {
     const ref = this.pets.doc(petId);
-    return this.db.runTransaction(async (tx) => {
+    await this.db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists) throw new Error(`Pet ${petId} not found`);
+      if (!snap.exists) {
+        const e = new Error(`Pet ${petId} not found`);
+        e.status = 404;
+        throw e;
+      }
       const currentPet = { id: snap.id, ...snap.data() };
 
       const fieldUpdates = await mutatorFn(currentPet);
       if (fieldUpdates && Object.keys(fieldUpdates).length > 0) {
         tx.update(ref, fieldUpdates);
       }
-      return { ...currentPet, ...(fieldUpdates || {}) };
     });
+    return withId(await ref.get());
   }
 }

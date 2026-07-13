@@ -7,7 +7,7 @@ import { Router } from "express";
 import { asyncHandler } from "../middleware/errorHandler.js";
 
 // Receives the container from injector.buildContainer().
-export function createPetRoutes({ petOrchestrator, interactionOrchestrator }) {
+export function createPetRoutes({ petOrchestrator, interactionOrchestrator, clothingOrchestrator }) {
   const router = Router();
 
   // Create or initialize a pet with presets.
@@ -31,10 +31,13 @@ export function createPetRoutes({ petOrchestrator, interactionOrchestrator }) {
   );
 
   // Actions. body carries the intensity/nutrition/hours (all optional).
+  // (req.body is undefined when no JSON body is sent — default it everywhere
+  //  so a bare POST doesn't crash with a 500.)
   router.post(
     "/:petId/feed",
     asyncHandler(async (req, res) => {
-      const pet = await petOrchestrator.feed(req.params.petId, req.body.nutrition);
+      const body = req.body ?? {};
+      const pet = await petOrchestrator.feed(req.params.petId, body.nutrition);
       res.json(pet);
     })
   );
@@ -42,7 +45,8 @@ export function createPetRoutes({ petOrchestrator, interactionOrchestrator }) {
   router.post(
     "/:petId/play",
     asyncHandler(async (req, res) => {
-      const pet = await petOrchestrator.play(req.params.petId, req.body.intensity);
+      const body = req.body ?? {};
+      const pet = await petOrchestrator.play(req.params.petId, body.intensity);
       res.json(pet);
     })
   );
@@ -50,7 +54,8 @@ export function createPetRoutes({ petOrchestrator, interactionOrchestrator }) {
   router.post(
     "/:petId/sleep",
     asyncHandler(async (req, res) => {
-      const pet = await petOrchestrator.sleep(req.params.petId, req.body.hours);
+      const body = req.body ?? {};
+      const pet = await petOrchestrator.sleep(req.params.petId, body.hours);
       res.json(pet);
     })
   );
@@ -67,23 +72,60 @@ export function createPetRoutes({ petOrchestrator, interactionOrchestrator }) {
   router.post(
     "/:petId/think",
     asyncHandler(async (req, res) => {
-      const thought = await petOrchestrator.think(req.params.petId, req.body.context);
+      const body = req.body ?? {};
+      const thought = await petOrchestrator.think(req.params.petId, body.context);
       res.json(thought);
     })
   );
 
   // AI: full interaction pipeline (gather -> assess -> validate -> apply -> reply).
-  // body: { message, context? }. The reply's hidden saveMemory directive is
-  // consumed server-side and never appears in this response.
+  // body: { message, context? }. Response splits the reply in two channels:
+  // message (dialogue) + action (narration). The reply's hidden saveMemory
+  // directive is consumed server-side and never appears in this response.
   router.post(
     "/:petId/interact",
     asyncHandler(async (req, res) => {
+      const body = req.body ?? {};
       const result = await interactionOrchestrator.interact(
         req.params.petId,
-        req.body.message,
-        req.body.context
+        body.message,
+        body.context
       );
       res.json(result);
+    })
+  );
+
+  // AI: the user asks her to remove garments; the AI decides in character
+  // (grounded by the numeric disposition). body: { message, itemIds?, context? }
+  router.post(
+    "/:petId/clothing/request-removal",
+    asyncHandler(async (req, res) => {
+      const body = req.body ?? {};
+      const result = await interactionOrchestrator.requestUndress(
+        req.params.petId,
+        body.message,
+        Array.isArray(body.itemIds) ? body.itemIds.map(String) : null,
+        body.context
+      );
+      res.json(result);
+    })
+  );
+
+  // Wardrobe: direct equip/unequip (no AI involved).
+  // body: { itemIds: ["..."] } or { itemId: "..." }
+  router.post(
+    "/:petId/clothing/equip",
+    asyncHandler(async (req, res) => {
+      const pet = await clothingOrchestrator.equip(req.params.petId, req.body ?? {});
+      res.json(pet);
+    })
+  );
+
+  router.post(
+    "/:petId/clothing/unequip",
+    asyncHandler(async (req, res) => {
+      const pet = await clothingOrchestrator.unequip(req.params.petId, req.body ?? {});
+      res.json(pet);
     })
   );
 
@@ -92,10 +134,11 @@ export function createPetRoutes({ petOrchestrator, interactionOrchestrator }) {
   router.post(
     "/:petId/talk",
     asyncHandler(async (req, res) => {
+      const body = req.body ?? {};
       const thought = await petOrchestrator.talk(
         req.params.petId,
-        req.body.message,
-        req.body.context
+        body.message,
+        body.context
       );
       res.json(thought);
     })

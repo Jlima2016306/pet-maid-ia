@@ -13,8 +13,13 @@ import { parseThought } from "./gemini/thoughtParser.js";
 import {
   buildAssessPrompt,
   buildRespondInteractionPrompt,
+  buildUndressDecisionPrompt,
 } from "./gemini/interactionPromptBuilder.js";
-import { parseAssessment, parseInteractionReply } from "./gemini/interactionParser.js";
+import {
+  parseAssessment,
+  parseInteractionReply,
+  parseUndressDecision,
+} from "./gemini/interactionParser.js";
 
 export class GeminiAdapter extends IaPort {
   constructor(model = getGeminiModel()) {
@@ -52,5 +57,12 @@ export class GeminiAdapter extends IaPort {
     const prompt = buildRespondInteractionPrompt(pet, snapshot, userMessage, context);
     const raw = await this._generate(prompt);
     return parseInteractionReply(raw);
+  }
+
+  // Undress-request flow: in-character yes/no decision on removing garments.
+  async decideUndress(pet, snapshot, userMessage, context = {}) {
+    const prompt = buildUndressDecisionPrompt(pet, snapshot, userMessage, context);
+    const raw = await this._generate(prompt);
+    return parseUndressDecision(raw);
   }
 }

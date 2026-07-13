@@ -15,6 +15,7 @@ import { IaService } from "../services/ia/IaService.js";
 
 import { PetOrchestrator } from "../application/orchestrators/PetOrchestrator.js";
 import { InteractionOrchestrator } from "../application/orchestrators/InteractionOrchestrator.js";
+import { ClothingOrchestrator } from "../application/orchestrators/ClothingOrchestrator.js";
 
 let container = null;
 
@@ -32,12 +33,14 @@ export function buildContainer() {
   // --- Build orchestrators with their injected services ---
   const petOrchestrator = new PetOrchestrator({ repositoryService, iaService });
   const interactionOrchestrator = new InteractionOrchestrator({ repositoryService, iaService });
+  const clothingOrchestrator = new ClothingOrchestrator({ repositoryService });
 
   container = {
     repositoryService,
     iaService,
     petOrchestrator,
     interactionOrchestrator,
+    clothingOrchestrator,
   };
 
   return container;

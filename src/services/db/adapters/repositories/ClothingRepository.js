@@ -15,4 +15,11 @@ export class ClothingRepository {
   async list() {
     return mapDocs(await this.clothing.get());
   }
+
+  // Idempotent upsert with the item id as doc id (used by the catalog seeder).
+  async set(itemId, item) {
+    const { id: _ignored, ...data } = item;
+    await this.clothing.doc(itemId).set(data);
+    return { ...data, id: itemId };
+  }
 }

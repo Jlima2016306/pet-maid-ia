@@ -64,4 +64,20 @@ export class IaPort {
   async respondInteraction(pet, snapshot, userMessage, context = {}) {
     throw new Error("IaPort.respondInteraction() not implemented");
   }
+
+  /**
+   * Undress-request flow: the user asked her to remove garments. Given the
+   * equipped items, the numerically computed disposition and her memories,
+   * the AI decides IN CHARACTER whether she agrees and which garments go.
+   * The decision is validated numerically before any clothing changes.
+   *
+   * @param {object} pet
+   * @param {object} snapshot  { equippedItems, requestedItemIds, disposition, memoryIndex }
+   * @param {string} userMessage
+   * @param {object} [context]
+   * @returns {Promise<object>} an UndressDecision (see domain/models/Interaction.js)
+   */
+  async decideUndress(pet, snapshot, userMessage, context = {}) {
+    throw new Error("IaPort.decideUndress() not implemented");
+  }
 }

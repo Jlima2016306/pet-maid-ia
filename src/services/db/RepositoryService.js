@@ -37,6 +37,7 @@ export class RepositoryService {
   // ---------- Clothing ----------
   getClothingItem(itemId) { return this.adapter.getClothingItem(itemId); }
   listClothingItems() { return this.adapter.listClothingItems(); }
+  setClothingItem(itemId, item) { return this.adapter.setClothingItem(itemId, item); }
 
   // ---------- Body subcollections ----------
   setSpecialOrgan(petId, organId, organ) { return this.adapter.setSpecialOrgan(petId, organId, organ); }

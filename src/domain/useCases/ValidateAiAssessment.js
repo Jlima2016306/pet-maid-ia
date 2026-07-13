@@ -33,6 +33,19 @@ function getPath(obj, dotPath) {
   return dotPath.split(".").reduce((acc, key) => (acc == null ? acc : acc[key]), obj);
 }
 
+// Whitelist + clamp a raw statChanges proposal. Shared by every flow that
+// lets the AI suggest deltas (/interact assessment, undress decision).
+export function clampDeltas(statChanges = {}) {
+  const approved = {};
+  for (const [path, raw] of Object.entries(statChanges ?? {})) {
+    const limit = DELTA_LIMITS[path];
+    const delta = Number(raw);
+    if (!limit || Number.isNaN(delta) || delta === 0) continue;
+    approved[path] = Math.max(-limit, Math.min(limit, delta));
+  }
+  return approved;
+}
+
 export function validateAiAssessment(pet, computedAfflictions, assessment = {}) {
   const computedById = new Map(computedAfflictions.map((a) => [a.id, a]));
   const claimed = Array.isArray(assessment.afflictions) ? assessment.afflictions : [];
@@ -46,13 +59,7 @@ export function validateAiAssessment(pet, computedAfflictions, assessment = {}) 
   const rejectedAfflictions = [...claimedSet].filter((id) => !computedById.has(id));
 
   // Deltas: whitelist the path, clamp the magnitude.
-  const approvedDeltas = {};
-  for (const [path, raw] of Object.entries(assessment.statChanges ?? {})) {
-    const limit = DELTA_LIMITS[path];
-    const delta = Number(raw);
-    if (!limit || Number.isNaN(delta) || delta === 0) continue;
-    approvedDeltas[path] = Math.max(-limit, Math.min(limit, delta));
-  }
+  const approvedDeltas = clampDeltas(assessment.statChanges);
 
   return {
     approvedAfflictions,

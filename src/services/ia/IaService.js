@@ -29,4 +29,9 @@ export class IaService {
   respondInteraction(pet, snapshot, userMessage, context = {}) {
     return this.adapter.respondInteraction(pet, snapshot, userMessage, context);
   }
+
+  // Undress-request flow -> UndressDecision (validated by the domain after).
+  decideUndress(pet, snapshot, userMessage, context = {}) {
+    return this.adapter.decideUndress(pet, snapshot, userMessage, context);
+  }
 }

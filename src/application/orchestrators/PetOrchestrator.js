@@ -51,6 +51,9 @@ export class PetOrchestrator {
     for (const experience of sub.experiences ?? []) {
       writes.push(this.repo.addExperience(petId, experience));
     }
+    for (const person of sub.personMemories ?? []) {
+      writes.push(this.repo.addPersonMemory(petId, person));
+    }
     await Promise.all(writes);
   }
 

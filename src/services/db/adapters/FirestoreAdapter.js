@@ -46,24 +46,37 @@ export class FirestoreAdapter extends RepositoryPort {
 
   // deletePet also clears subcollections (Firestore has no cascade).
   async deletePet(petId) {
-    const [habits, tasks, stats] = await Promise.all([
-      this.habitRepo.list(petId),
-      this.taskRepo.list(petId),
-      this.statRepo.list(petId, 500),
-    ]);
-    await Promise.all([
-      ...habits.map((h) => this.habitRepo.remove(petId, h.id)),
-      ...tasks.map((t) => this.taskRepo.remove(petId, t.id)),
-    ]);
-    // statistics have no single-delete in the repo; wipe via batch here
-    const statsCol = this.db.collection("pets").doc(petId).collection("statistics");
-    const snap = await statsCol.get();
-    if (!snap.empty) {
+    const petDoc = this.db.collection("pets").doc(petId);
+
+    // Flat subcollections, wiped by batch.
+    const flatCollections = [
+      "habits", "tasks", "statistics",
+      "eventLog", "specialOrgans", "erogenousZones",
+    ].map((name) => this._wipeCollection(petDoc.collection(name)));
+
+    // Memories nest one level deeper: memories/{type}/entries/{id}.
+    const memoryTypes = ["coreEmotions", "people", "experiences", "preferences", "ephemeral"];
+    const memoryWipes = memoryTypes.map(async (type) => {
+      const typeDoc = petDoc.collection("memories").doc(type);
+      await this._wipeCollection(typeDoc.collection("entries"));
+      await typeDoc.delete();
+    });
+
+    await Promise.all([...flatCollections, ...memoryWipes]);
+    return this.petRepo.delete(petId);
+  }
+
+  // Batch-delete every doc in a collection (fine at this scale; Firestore
+  // batches cap at 500 writes, chunked here just in case).
+  async _wipeCollection(colRef) {
+    const snap = await colRef.get();
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 500) {
       const batch = this.db.batch();
-      snap.forEach((d) => batch.delete(d.ref));
+      docs.slice(i, i + 500).forEach((d) => batch.delete(d.ref));
       await batch.commit();
     }
-    return this.petRepo.delete(petId);
   }
 
   // ---------- Habits ----------
@@ -83,6 +96,7 @@ export class FirestoreAdapter extends RepositoryPort {
   // ---------- Clothing ----------
   getClothingItem(itemId) { return this.clothingRepo.getById(itemId); }
   listClothingItems() { return this.clothingRepo.list(); }
+  setClothingItem(itemId, item) { return this.clothingRepo.set(itemId, item); }
 
   // ---------- Body subcollections ----------
   setSpecialOrgan(petId, organId, organ) { return this.bodyRepo.setSpecialOrgan(petId, organId, organ); }

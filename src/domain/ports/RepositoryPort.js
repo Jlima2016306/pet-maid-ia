@@ -80,6 +80,10 @@ export class RepositoryPort {
   async listClothingItems() {
     throw new Error("RepositoryPort.listClothingItems() not implemented");
   }
+  // Idempotent upsert keyed by itemId (catalog seeding).
+  async setClothingItem(itemId, item) {
+    throw new Error("RepositoryPort.setClothingItem() not implemented");
+  }
 
   // ---------- Body subcollections ----------
   // pets/{petId}/specialOrgans/{organId} and pets/{petId}/erogenousZones/{zoneId}.

@@ -1,142 +1,163 @@
-# Guía de pruebas — Tamagotchi Backend
+# Guía de uso de las APIs — Tamagotchi Backend
 
-Cómo levantar el servidor y probar cada endpoint, en especial el nuevo pipeline de interacción (`/interact`).
+Cómo levantar el servidor y usar cada endpoint, incluido el pipeline de interacción (`/interact`), el guardarropa y la petición de desnudarse (`/clothing/request-removal`).
 
-## 1. Prerrequisitos
+## 1. Prerrequisitos y arranque
 
-- `credentials/firebase-key.json` — clave de cuenta de servicio de Firebase (ya existe en el repo).
-- `.env` con al menos:
-  ```
-  GEMINI_API_KEY=tu_clave
-  GEMINI_MODEL=gemini-1.5-flash     # opcional
-  PORT=3000                          # opcional
-  ```
-- Dependencias instaladas: `npm install`.
-
-## 2. Arrancar
+- `credentials/firebase-key.json` (clave de servicio de Firebase) y `.env` con al menos `GEMINI_API_KEY`.
+- `npm install` y luego:
 
 ```powershell
 npm run dev
-# → 🐾 Tamagotchi backend running on http://localhost:3000
+# → 🐾 Tamagotchi backend running on port 3000
+Invoke-RestMethod http://localhost:3000/health   # → status: ok
 ```
 
-Comprobar que responde:
+> En PowerShell usa `Invoke-RestMethod` (el alias `curl` de PowerShell no es curl real; si quieres curl clásico usa `curl.exe`).
+
+## 2. Flujo recomendado de primera vez
 
 ```powershell
-Invoke-RestMethod http://localhost:3000/health
-# → status: ok
-```
+# 1) Sembrar el catálogo de ropa (idempotente, se puede repetir)
+Invoke-RestMethod -Method Post -Uri http://localhost:3000/clothing/init
 
-> En PowerShell usa `Invoke-RestMethod` (el alias `curl` de PowerShell NO es curl real).
-> Si prefieres curl clásico, usa `curl.exe`.
-
-## 3. Crear la mascota
-
-Presets de personalidad (`neuroPresetId`): `maidTsundere`, `maidYandere`, `maidDeredere`, `maidHevel`, `emotionless`.
-Presets de cuerpo (`bodyPresetId`): `tall170`, `petite149`.
-
-```powershell
+# 2) Crear la mascota
 Invoke-RestMethod -Method Post -Uri http://localhost:3000/pets `
   -ContentType "application/json" `
-  -Body (@{ petId = "mia"; name = "Mia"; neuroPresetId = "maidTsundere"; bodyPresetId = "petite149" } | ConvertTo-Json)
-```
+  -Body (@{ petId = "mia"; name = "Mia"; neuroPresetId = "maidHevel"; bodyPresetId = "petite149" } | ConvertTo-Json)
 
-Esto crea `pets/mia` y siembra las subcolecciones: `specialOrgans`, `erogenousZones` (24 zonas a progreso 0), `memories/coreEmotions` (5 emociones), y las preferencias/experiencias de la personalidad. Es idempotente: repetir la llamada no duplica nada.
+# 3) Vestirla
+Invoke-RestMethod -Method Post -Uri http://localhost:3000/pets/mia/clothing/equip `
+  -ContentType "application/json" `
+  -Body (@{ itemIds = @("vestidoTirantes", "sostenLigero", "bragasLigeras", "mediasNegras") } | ConvertTo-Json)
 
-Verificar:
-
-```powershell
-Invoke-RestMethod http://localhost:3000/pets/mia
-```
-
-## 4. El endpoint principal: POST /pets/:petId/interact
-
-```powershell
+# 4) Hablarle
 Invoke-RestMethod -Method Post -Uri http://localhost:3000/pets/mia/interact `
   -ContentType "application/json" `
-  -Body (@{ message = "Hola Mia, me quedo mirando tus brazos... ¿cómo estás?" } | ConvertTo-Json)
+  -Body (@{ message = "Hola Mia... me quedo mirando tu vestido" } | ConvertTo-Json)
 ```
 
-Qué pasa por dentro (los 5 pasos):
+**Presets de personalidad** (`neuroPresetId`): `maidTsundere`, `maidYandere`, `maidDeredere`, `maidHevel`, `emotionless`.
+**Presets de cuerpo** (`bodyPresetId`): `tall170`, `petite149`.
+Toda mascota nace con la memoria de persona **"Amo" (master)**: el usuario es su Amo.
 
-1. Carga pet + ropa equipada + memorias + zonas; calcula cobertura (qué está desnudo) y afecciones numéricas.
-2. Gemini (llamada 1) propone afecciones, deltas de stats y si usa un recuerdo.
-3. El dominio valida: afecciones sin respaldo numérico se rechazan, deltas se recortan a los límites.
-4. Los deltas aprobados se aplican en una transacción atómica y se relee el pet.
-5. Gemini (llamada 2) responde en español, en personaje, describiendo la parte del cuerpo que miras; su directiva oculta `saveMemory` se consume en el servidor.
+## 3. Catálogo de ropa
 
-Respuesta esperada (forma):
+| Endpoint | Método | Descripción |
+|---|---|---|
+| `/clothing/init` | POST | Siembra el catálogo desde los presets (idempotente) |
+| `/clothing` | GET | Lista el catálogo completo |
+
+Prendas del catálogo:
+
+| id | Prenda | Cubre partes | Oculta zonas |
+|---|---|---|---|
+| `mediasNegras` | Medias negras semitransparentes | piernas y pies | feet, backOfKnees |
+| `bragasLigeras` | Bragas ligeras | — | vulva, labios, perineo, zona anal, glúteos |
+| `sostenLigero` | Sostén ligero | — | pechos, pezones |
+| `vestidoTirantes` | Vestido delgado de tirantes | torso | pechos, pezones, ombligo, espalda baja, glúteos, muslos internos |
+
+La ropa tiene dos niveles de cobertura: `covers` (partes enteras del cuerpo) y `coversZones` (zonas íntimas). Una zona sin prenda que la oculte está **EXPUESTA** y la IA la describirá explícitamente; una parte sin ropa está **DESNUDA**.
+
+## 4. Guardarropa de la mascota
+
+| Endpoint | Método | Body | Descripción |
+|---|---|---|---|
+| `/pets/:petId/clothing/equip` | POST | `{ "itemIds": ["vestidoTirantes"] }` o `{ "itemId": "..." }` | Ponerle prendas (valida que existan en el catálogo) |
+| `/pets/:petId/clothing/unequip` | POST | `{ "itemIds": [...] }` | Quitarle prendas directamente (sin IA) |
+| `/pets/:petId/clothing/request-removal` | POST | `{ "message": "...", "itemIds"?: [...], "context"?: {} }` | **Pedirle** que se quite ropa: la IA decide según sus datos |
+
+### request-removal: cómo decide
+
+1. Se calcula una **disposición numérica** (0-1) desde sus datos reales: `0.45·oxitocina + 0.25·excitación + 0.15·dopamina − 0.35·cortisol + sesgo de personalidad` (Hevel +0.35 obediencia absoluta, Yandere +0.15, Deredere +0.10, Tsundere −0.15, Emotionless 0).
+2. La IA decide **en personaje** con esa guía (< 0.3 casi seguro se niega, > 0.6 probablemente acepta).
+3. Se valida: solo puede quitarse prendas que realmente lleva; si acepta con disposición < 0.15, se **anula** la aceptación (`overridden: true`).
+4. Si acepta: las prendas salen de `equippedItemIds` y los deltas de stats se aplican **en la misma transacción atómica**; luego responde describiendo su nueva exposición.
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:3000/pets/mia/clothing/request-removal `
+  -ContentType "application/json" `
+  -Body (@{ message = "Mia, quítate el vestido para mí"; itemIds = @("vestidoTirantes") } | ConvertTo-Json)
+```
+
+Respuesta:
 
 ```json
 {
-  "thought": { "emotion": "...", "message": "respuesta en español", "intensity": 0.6 },
-  "gazeTarget": "leftArm",
-  "afflictions": [ { "id": "estres", "label": "Estrés", "severity": 0.28, "evidence": {...} } ],
-  "rejectedAfflictions": [ "fiebre" ],
-  "memoryUsedId": null,
-  "memorySaved": false,
-  "state": { "neuroState": {...}, "physicalState": {...}, "arousalState": {...}, "nakedParts": [...], "isFullyNaked": true }
+  "accepted": true,
+  "removedItemIds": ["vestidoTirantes"],
+  "reason": "es la voluntad de mi Amo",
+  "overridden": false,
+  "message": "C-como ordene, Amo...",
+  "action": "Baja la mirada y desliza los tirantes por sus hombros; el vestido cae. Bajo él, el sostén ligero...",
+  "emotion": "sumisa",
+  "intensity": 0.7,
+  "gazeTarget": null,
+  "memorySaved": true,
+  "state": { "...": "...", "equippedItemIds": ["sostenLigero","bragasLigeras","mediasNegras"], "nakedParts": [...] }
 }
 ```
 
-Qué mirar en cada prueba:
+Consejos de prueba: con `maidHevel` recién creada casi siempre acepta (oxitocina 0.85 + sesgo 0.35). Para forzar un rechazo usa `maidTsundere` o sube `neuroState.cortisol` a 0.9 en la consola de Firebase.
 
-- **Mirada**: el mensaje debe indicar hacia dónde miras ("miro tu torso", "observo tus pies") → `gazeTarget` debe ser esa parte y `thought.message` debe describirla con los datos reales (ropa o desnudez, temperatura, detalles).
-- **Validación**: `rejectedAfflictions` lista lo que la IA alucinó y los números no respaldan. Con un pet recién creado casi todo debería rechazarse (está sano).
-- **Deltas**: compara `state.neuroState` entre llamadas; ningún stat debe moverse más de 0.15 por interacción (0.2 para arousal, 0.1 para físicos).
-- **Memoria oculta**: di algo significativo ("recuerda que odio las tormentas") → `memorySaved: true` y en Firestore aparece el doc en `pets/mia/memories/ephemeral/entries` (o `experiences`/`preferences`). El contenido oculto nunca aparece en la respuesta HTTP.
+## 5. Interacción principal: POST /pets/:petId/interact
 
-## 5. Forzar afecciones para probar la validación
+Body: `{ "message": "...", "context"?: {} }`. El mensaje **siempre debe indicar hacia dónde miras** — la IA describe esa parte según los datos reales.
 
-No hay endpoint para setear stats directamente; dos vías:
+Pipeline interno: contexto completo (stats, ropa, zonas expuestas, órganos, memorias) → la IA propone afecciones/deltas/recuerdo → **validación numérica** (rechaza lo no respaldado, recorta deltas) → aplicación atómica en DB → respuesta desde el estado ya actualizado + directiva oculta de memoria consumida en el servidor.
 
-**A. Con las acciones existentes** (bajan/suben stats reales):
+Respuesta — la voz de la IA llega **en dos canales**:
 
-```powershell
-# Jugar fuerte 3-4 veces: baja bloodGlucose (~0.2 c/u) y sube cnsFatigue → hambre + agotamiento
-Invoke-RestMethod -Method Post -Uri http://localhost:3000/pets/mia/play `
-  -ContentType "application/json" -Body (@{ intensity = 1.0 } | ConvertTo-Json)
-
-# Luego interactúa y verifica que "hambre"/"agotamiento" aparecen en afflictions
+```json
+{
+  "message": "Ah... ¿m-mis manos? No es nada del otro mundo...",   // SOLO diálogo
+  "action": "Esconde las manos tras la espalda; los dedos finos asoman tras la tela...", // narración: qué ves y qué siente
+  "emotion": "verguenza",
+  "intensity": 0.6,
+  "gazeTarget": "hands",
+  "afflictions": [ { "id": "estres", "severity": 0.28, "evidence": {...} } ],
+  "rejectedAfflictions": ["fiebre"],
+  "memoryUsedId": null,
+  "memorySaved": false,
+  "state": { "neuroState": {...}, "physicalState": {...}, "arousalState": {...}, "equippedItemIds": [...], "nakedParts": [...], "isFullyNaked": false }
+}
 ```
 
-**B. Editando en la consola de Firebase** (más rápido para casos extremos): cambia a mano `physicalState.bloodGlucose = 0.05` o `neuroState.cortisol = 0.9` en el doc `pets/mia` y llama a `/interact`.
+Reglas que cumple la IA: responde siempre en español; **nunca dice números ni temperaturas** (si tiene frío, dice que tiene frío); si la parte/zona mirada está desnuda la describe explícitamente según los datos (pezones si miras sus pechos expuestos, etc.); si está vestida describe la prenda; `gazeTarget` se valida contra partes/zonas/órganos reales.
 
-Umbrales de referencia (de `AssessPetState.js`): hambre < 0.35 glucosa · deshidratación < 0.45 · estrés > 0.55 cortisol · somnolencia > 0.6 melatonina · agotamiento > 0.6 fatiga · dolor < 60 HP en alguna parte · excitación > 0.4 arousal.
+## 6. Ciclo de vida y acciones básicas
 
-## 6. Probar ropa / desnudez
+| Endpoint | Método | Body | Descripción |
+|---|---|---|---|
+| `/pets` | POST | `{ petId?, name, neuroPresetId, bodyPresetId }` | Crear/inicializar (idempotente) |
+| `/pets/:petId` | GET | — | Leer la mascota |
+| `/pets/:petId/feed` | POST | `{ "nutrition": 0.5 }` | Comer: sube glucosa, baja cortisol |
+| `/pets/:petId/play` | POST | `{ "intensity": 0.6 }` | Jugar: sube dopamina/oxitocina, gasta glucosa |
+| `/pets/:petId/sleep` | POST | `{ "hours": 0.8 }` | Dormir: recupera fatiga |
+| `/pets/:petId/wake` | POST | — | Despertar |
+| `/pets/:petId/think` | POST | `{ "context"?: {} }` | Pensamiento autónomo (flujo viejo) |
+| `/pets/:petId/talk` | POST | `{ "message": "..." }` | Charla simple (flujo viejo, sin validación) |
 
-Aún no hay endpoint para equipar ropa; para probar cobertura:
+## 7. Forzar afecciones para probar la validación
 
-1. En la consola de Firebase crea un doc en `clothingCatalog`, p. ej. id `maidDress01`:
-   ```json
-   { "name": "Vestido de maid", "covers": ["torso", "leftArm", "rightArm", "leftLeg", "rightLeg"], "thermalInsulation": 0.4, "physicalDefense": 0.1, "weightGr": 800, "slot": "outer" }
-   ```
-2. En `pets/mia` pon `equippedItemIds: ["maidDress01"]`.
-3. Llama a `/interact` mirando el torso → debe describirlo con el vestido; mirando la cabeza o los pies → debe describirlos desnudos (`nakedParts` lo confirma).
+Umbrales (de `AssessPetState.js`): hambre glucosa < 0.35 · deshidratación < 0.45 · estrés cortisol > 0.55 · somnolencia melatonina > 0.6 · agotamiento fatiga > 0.6 · dolor HP < 60 · excitación arousal > 0.4 · frío superficial piel desnuda < 35.5 °C.
 
-Sin ropa equipada, `isFullyNaked: true` y el prompt le dice a la IA que está desnuda.
+- Vía API: jugar 3-4 veces con `intensity: 1.0` baja la glucosa y sube la fatiga → aparecen `hambre` y `agotamiento`.
+- Vía consola de Firebase: edita `pets/mia` directamente (p. ej. `physicalState.bloodGlucose = 0.05`) para casos extremos.
 
-## 7. Resto de endpoints
-
-| Endpoint | Body | Qué hace |
-|---|---|---|
-| `POST /pets/:id/feed` | `{ "nutrition": 0.5 }` | Sube glucosa, baja cortisol |
-| `POST /pets/:id/play` | `{ "intensity": 0.6 }` | Sube dopamina/oxitocina, gasta glucosa |
-| `POST /pets/:id/sleep` | `{ "hours": 0.8 }` | Recupera fatiga, marca dormida |
-| `POST /pets/:id/wake` | — | Despierta |
-| `POST /pets/:id/think` | `{ "context": {} }` | Pensamiento autónomo (flujo viejo, prompt en inglés) |
-| `POST /pets/:id/talk` | `{ "message": "..." }` | Charla simple (flujo viejo, sin validación ni memorias) |
+Ningún stat neuro se mueve más de ±0.15 por interacción (±0.2 arousal, ±0.1 físicos), aunque la IA proponga más.
 
 ## 8. Errores esperados
 
-- `POST /pets/xxx/interact` con pet inexistente → `404 {"error":"Pet xxx not found"}`.
-- Sin `message` en el body → `400 {"error":"message is required"}`.
-- Sin `GEMINI_API_KEY` en `.env` → el servidor no arranca (error explícito).
-- Si Gemini devuelve JSON malformado, el pipeline NO se cae: la evaluación degrada a "sin propuesta" y la respuesta a una réplica neutral (`emotion: "confundida"`).
+- Pet inexistente → `404 {"error":"Pet xxx not found"}` (también en feed/play/sleep/wake).
+- Sin `message` → `400 {"error":"message is required"}`.
+- `equip` con item no catalogado → `400` con la lista de ids desconocidos (siembra antes con `/clothing/init`).
+- Sin `GEMINI_API_KEY` → el servidor no arranca.
+- JSON malformado de Gemini → no rompe: la evaluación degrada a "sin propuesta", la respuesta a neutral y la decisión de desnudarse a **rechazo**.
 
-## 9. Rastro en Firestore tras una interacción
+## 9. Rastro en Firestore tras cada interacción
 
-- `pets/mia` → stats actualizados + `lastThought`.
-- `pets/mia/eventLog` → una entrada `speak` con el mensaje, el `gazeTarget` y si se usó/guardó memoria.
-- `pets/mia/memories/{tipo}/entries` → la memoria nueva si `memorySaved: true`.
+- `pets/mia` → stats + `lastThought` (con `message` y `action`).
+- `pets/mia/eventLog` → entrada por interacción (`speak`) o petición de ropa (`action`/`undress_requested` con `accepted`, `removedItemIds`, `disposition`).
+- `pets/mia/memories/{tipo}/entries` → memorias nuevas si `memorySaved: true`; al crearla: 5 emociones núcleo, preferencias/experiencias de personalidad y la persona **"Amo"**.
+- `pets/mia/specialOrgans` y `pets/mia/erogenousZones` → sembrados al crear.

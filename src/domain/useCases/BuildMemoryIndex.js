@@ -28,3 +28,21 @@ export function buildMemoryIndex(memoriesByType = {}) {
   push("ephemeral", memoriesByType.ephemeral);
   return index;
 }
+
+// Look up the FULL memory object by id across every type list (the index only
+// carries a truncated text — the reply prompt deserves the whole content).
+export function findMemoryById(memoriesByType = {}, memoryId) {
+  if (!memoryId) return null;
+  const lists = [
+    ["coreEmotion", memoriesByType.coreEmotions],
+    ["person", memoriesByType.people],
+    ["experience", memoriesByType.experiences],
+    ["preference", memoriesByType.preferences],
+    ["ephemeral", memoriesByType.ephemeral],
+  ];
+  for (const [type, list] of lists) {
+    const hit = (list ?? []).find((m) => m?.id === memoryId);
+    if (hit) return { ...hit, memoryType: type };
+  }
+  return null;
+}

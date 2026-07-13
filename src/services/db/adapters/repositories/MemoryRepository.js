@@ -1,5 +1,28 @@
 // services/db/adapters/repositories/MemoryRepository.js
 
+// Memory objects carry a singular `type` ("person", "experience"...) but the
+// Firestore docs under pets/{petId}/memories/ use collection-style names
+// ("people", "experiences"...). Accept both spellings everywhere.
+const COLLECTION_BY_TYPE = {
+  coreEmotion: "coreEmotions",
+  coreEmotions: "coreEmotions",
+  person: "people",
+  people: "people",
+  experience: "experiences",
+  experiences: "experiences",
+  trauma: "experiences",
+  preference: "preferences",
+  preferences: "preferences",
+  ephemeral: "ephemeral",
+  suppressed: "ephemeral",
+};
+
+function collectionFor(memoryType) {
+  const col = COLLECTION_BY_TYPE[memoryType];
+  if (!col) throw new Error(`Unknown memory type: ${memoryType}`);
+  return col;
+}
+
 export class MemoryRepository {
   constructor(db) {
     this.db = db;
@@ -116,8 +139,10 @@ export class MemoryRepository {
   // EVENT LOG
   async addEventLogEntry(petId, logEntry) {
     const ref = this.db.collection("pets").doc(petId).collection("eventLog").doc();
-    await ref.set(logEntry);
-    return { ...logEntry, id: ref.id };
+    // Strip any embedded id so the Firestore doc id is the single source of truth.
+    const { id: _ignored, ...data } = logEntry;
+    await ref.set(data);
+    return { ...data, id: ref.id };
   }
 
   async getEventLog(petId, limit = 100) {
@@ -128,7 +153,8 @@ export class MemoryRepository {
       .orderBy("timestamp", "desc")
       .limit(limit)
       .get();
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // id last so a stray embedded id in old docs can't clobber the doc id.
+    return snap.docs.map(d => ({ ...d.data(), id: d.id }));
   }
 
   // GENERAL
@@ -143,12 +169,12 @@ export class MemoryRepository {
   }
 
   async updateMemory(petId, memoryType, memoryId, updates) {
-    const docPath = `pets/${petId}/memories/${memoryType}/entries/${memoryId}`;
+    const docPath = `pets/${petId}/memories/${collectionFor(memoryType)}/entries/${memoryId}`;
     await this.db.doc(docPath).update(updates);
   }
 
   async deleteMemory(petId, memoryType, memoryId) {
-    const docPath = `pets/${petId}/memories/${memoryType}/entries/${memoryId}`;
+    const docPath = `pets/${petId}/memories/${collectionFor(memoryType)}/entries/${memoryId}`;
     await this.db.doc(docPath).delete();
   }
 }
